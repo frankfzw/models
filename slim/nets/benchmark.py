@@ -39,27 +39,34 @@ import math
 import sys
 import time
 import numpy as np
-
+import tensorflow as tf
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import os
+
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-import tensorflow as tf
 sys.path.append(".")
-opts=None
+opts = None
+
 
 def placeholder_inputs():
-  """Generate placeholder variables to represent the input tensors.
-  These placeholders are used as inputs by the rest of the model building
-  code.
-  """
-  batch_size = opts.batch_size
-  image_size = opts.image_size
-  images_placeholder = tf.placeholder(tf.float32, shape=(batch_size,
-                                                        image_size,
-                                                        image_size,
-                                                        3))
-  labels_placeholder = tf.placeholder(tf.int32, shape=(batch_size))
-  return images_placeholder, labels_placeholder
+    """Generate placeholder variables to represent the input tensors.
+    These placeholders are used as inputs by the rest of the model building
+    code.
+    """
+    batch_size = opts.batch_size
+    image_size = opts.image_size
+    images_placeholder = None
+    labels_placeholder = None
+    if opts.mode == 'CPU':
+        images_placeholder = tf.placeholder(tf.float32,
+                                            shape=(batch_size, image_size, image_size, 3))
+        labels_placeholder = tf.placeholder(tf.int32, shape=batch_size)
+    else:
+        images_placeholder = tf.placeholder(tf.float32,
+                                            shape=(batch_size, 3, image_size, image_size))
+        labels_placeholder = tf.placeholder(tf.int32, shape=batch_size)
+    return images_placeholder, labels_placeholder
 
 
 def loss(logits, labels):
@@ -71,83 +78,97 @@ def loss(logits, labels):
         concated, tf.stack([batch_size, 1000]), 1.0, 0.0)
     cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
         logits=logits, labels=onehot_labels, name='xentropy')
-    loss = tf.reduce_mean(cross_entropy, name='xentropy_mean')
-    return loss
+    l = tf.reduce_mean(cross_entropy, name='xentropy_mean')
+    return l
+
 
 def time_tensorflow_run(session, target, images_placeholder, labels_placeholder, info_string):
-  """Run the computation to obtain the target tensor and print timing stats.
 
-  Args:
+    """Run the computation to obtain the target tensor and print timing stats.
+
+    Args:
     session: the TensorFlow session to run the computation under.
     target: the target Tensor that is passed to the session's run() function.
     info_string: a string summarizing this run, to be printed with the stats.
 
-  Returns:
+    Returns:
     None
-  """
-  num_steps_burn_in = 10
-  total_duration = 0.0
-  total_duration_squared = 0.0
-  batch_size = opts.batch_size
-  image_size = opts.image_size
-  for i in xrange(opts.num_batches + num_steps_burn_in):
-    # Feed dictionaray
-    feed_dict = {
-        images_placeholder : np.random.randn(batch_size,image_size,image_size,3)*1e-1,
-        labels_placeholder : np.ones(batch_size),
-    }
+    """
+    num_steps_burn_in = 10
+    total_duration = 0.0
+    total_duration_squared = 0.0
+    batch_size = opts.batch_size
+    image_size = opts.image_size
+    for i in xrange(opts.num_batches + num_steps_burn_in):
+        # Feed dictionaray
+        feed_dict = {}
+        if opts.mode == 'CPU':
+            feed_dict = {
+                images_placeholder: np.random.randn(batch_size, image_size, image_size, 3)*1e-1,
+                labels_placeholder: np.ones(batch_size),
+            }
+        else:
+            feed_dict = {
+                images_placeholder: np.random.randn(batch_size, 3, image_size, image_size)*1e-1,
+                labels_placeholder: np.ones(batch_size),
+            }
+        start_time = time.time()
+        _ = session.run(target, feed_dict=feed_dict)
+        duration = time.time() - start_time
+        if i >= num_steps_burn_in:
+            if not i % 10:
+                print ('%s: step %d, duration = %.3f' % (datetime.now(), i - num_steps_burn_in, duration))
+            total_duration += duration
+            total_duration_squared += duration * duration
+    mn = total_duration / opts.num_batches
+    vr = total_duration_squared / opts.num_batches - mn * mn
+    sd = math.sqrt(vr)
+    l = '%s across %d steps, %.3f +/- %.3f sec / batch. Throughput is %.3f sample / sec.' % \
+        (info_string, opts.num_batches, mn, sd, opts.num_batches*opts.batch_size/total_duration)
+    print(l)
+    with open('./log/{}.log'.format(opts.model_type), 'a+') as f:
+        f.write(l + '\n')
 
-    start_time = time.time()
-    _ = session.run(target, feed_dict=feed_dict)
-    duration = time.time() - start_time
-    if i >= num_steps_burn_in:
-      if not i % 10:
-        print ('%s: step %d, duration = %.3f' %
-               (datetime.now(), i - num_steps_burn_in, duration))
-      total_duration += duration
-      total_duration_squared += duration * duration
-  mn = total_duration / opts.num_batches
-  vr = total_duration_squared / opts.num_batches - mn * mn
-  sd = math.sqrt(vr)
-  print ('%s across %d steps, %.3f +/- %.3f sec / batch. Throughput is %.3f sample / sec.' %
-         (info_string, opts.num_batches, mn, sd, opts.num_batches*opts.batch_size/total_duration))
 
 def run_benchmark():
-  """Run the benchmark on Inception_V1."""
-  with tf.Graph().as_default():
-    # Generate some dummy images.
-    image_size = opts.image_size
-    # Note that our padding definition is slightly different the cuda-convnet.
-    # In order to force the model to start with the same activations sizes,
-    # we add 3 to the image_size and employ VALID padding above.
-    images_placeholder, labels_placeholder = placeholder_inputs()
-    # Build a Graph that computes the logits predictions from the
-    # inference model.
-    if not ResNet:
-        logits, _ = inference(images_placeholder)
-    else:
-        logits, _ = inference(images_placeholder, num_classes = 1000)
+    """Run the benchmark on Inception_V1."""
+    with tf.Graph().as_default():
+        # Generate some dummy images.
+        image_size = opts.image_size
+        # Note that our padding definition is slightly different the cuda-convnet.
+        # In order to force the model to start with the same activations sizes,
+        # we add 3 to the image_size and employ VALID padding above.
+        images_placeholder, labels_placeholder = placeholder_inputs()
+        # Build a Graph that computes the logits predictions from the
+        # inference model.
+        if opts.mode == 'CPU':
+            logits, _ = inference(images_placeholder, num_classes=1000)
+        elif opts.mode == 'GPU':
+            logits, _ = inference(images_placeholder, num_classes=1000, device='/gpu:0')
+        else:
+            # TensorFLow MKL
+            logits, _ = inference(images_placeholder, num_classes=1000, device='/cpu:0')
 
-    # Get loss function
-    objective = loss(logits, labels_placeholder)
+        # Get loss function
+        objective = loss(logits, labels_placeholder)
 
-    # Get train option
-    learning_rate = 0.001
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate)
-    train_op = optimizer.minimize(objective)
+        # Get train option
+        learning_rate = 0.001
+        optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+        train_op = optimizer.minimize(objective)
 
-    # Build an initialization operation.
-    init = tf.global_variables_initializer()
+        # Build an initialization operation.
+        init = tf.global_variables_initializer()
 
-    # config.gpu_options.allocator_type = 'BFC'
-    sess = tf.Session()
-    sess.run(init)
+        # config.gpu_options.allocator_type = 'BFC'
+        sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+        sess.run(init)
 
-    # Run the forward benchmark.
-    time_tensorflow_run(sess, logits, images_placeholder, labels_placeholder,"Forward")
+        # Run the forward benchmark.
+        time_tensorflow_run(sess, logits, images_placeholder, labels_placeholder, "Forward")
 
-    # Run the backward benchmark.
-    time_tensorflow_run(sess, train_op, images_placeholder, labels_placeholder, "Forward-backward")
+        # Run the backward benchmark.
+        time_tensorflow_run(sess, train_op, images_placeholder, labels_placeholder, "Forward-backward")
 
 ResNet = False
 
@@ -171,47 +192,57 @@ if __name__ == '__main__':
     optparser.add_option(
         "--model_type", default='inception_v1',
     )
+    optparser.add_option(
+        "--mode", default='CPU',
+    )
     opts = optparser.parse_args()[0]
-    if opts.model_type=='inception_v1':
+    if opts.model_type == 'inception_v1':
         from nets.inception_v1 import inception_v1 as inference
-    elif opts.model_type=='inception_v2':
+    elif opts.model_type == 'inception_v2':
         from nets.inception_v2 import inception_v2 as inference
-    elif opts.model_type=='inception_v3':
+    elif opts.model_type == 'inception_v3':
         from nets.inception_v3 import inception_v3 as inference
-    elif opts.model_type=='alexnet_v2':
+    elif opts.model_type == 'alexnet_v2':
         from nets.alexnet import alexnet_v2 as inference
-    elif opts.model_type=='resnet_v1_50':
+    elif opts.model_type == 'resnet_v1_50':
         from nets.resnet_v1 import resnet_v1_50 as inference
         ResNet = True
-    elif opts.model_type=='resnet_v1_101':
+    elif opts.model_type == 'resnet_v1_101':
         from nets.resnet_v1 import resnet_v1_101 as inference
         ResNet = True
-    elif opts.model_type=='resnet_v1_152':
+    elif opts.model_type == 'resnet_v1_152':
         from nets.resnet_v1 import resnet_v1_152 as inference
         ResNet = True
-    elif opts.model_type=='resnet_v1_200':
+    elif opts.model_type == 'resnet_v1_200':
         from nets.resnet_v1 import resnet_v1_200 as inference
         ResNet = True
-    elif opts.model_type=='resnet_v2_50':
+    elif opts.model_type == 'resnet_v2_50':
         from nets.resnet_v2 import resnet_v2_50 as inference
         ResNet = True
-    elif opts.model_type=='resnet_v2_101':
+    elif opts.model_type == 'resnet_v2_101':
         from nets.resnet_v2 import resnet_v2_101 as inference
         ResNet = True
-    elif opts.model_type=='resnet_v2_152':
+    elif opts.model_type == 'resnet_v2_152':
         from nets.resnet_v2 import resnet_v2_152 as inference
         ResNet = True
-    elif opts.model_type=='resnet_v2_200':
+    elif opts.model_type == 'resnet_v2_200':
         from nets.resnet_v2 import resnet_v2_200 as inference
         ResNet = True
-    elif opts.model_type=='vgg_16':
+    elif opts.model_type == 'vgg_16':
         from nets.vgg import vgg_16 as inference
-    elif opts.model_type=='vgg_19':
+    elif opts.model_type == 'vgg_19':
         from nets.vgg import vgg_19 as inference
-    elif opts.model_type=='alexnet_v1':
-	from nets.alexnet_v1 import alexnet_v1 as inference
-    elif opts.model_type=='alexnet_benchmark':
-        from nets.alexnet_benchmark import inference as inference
-    print("Model:"+opts.model_type+". Batch size is: "+str(opts.batch_size))
+    elif opts.model_type == 'alexnet_v1':
+        if opts.mode == 'GPU':
+            from nets.alexnet_nchw import alexnet_v1 as inference
+        else:
+            from nets.alexnet_v1 import alexnet_v1 as inference
+    else:
+        print("Model: {} is not supported".format(opts.model_type))
+        sys.exit(1)
+    l = "Model:"+opts.model_type+". Batch size is: "+str(opts.batch_size)
+    print(l)
+    with open('./log/{}.log'.format(opts.model_type), 'a+') as f:
+        f.write(l + '\n')
     run_benchmark()
 
