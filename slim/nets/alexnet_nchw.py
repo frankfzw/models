@@ -98,7 +98,7 @@ def alexnet_v1(inputs,
                 net = slim.max_pool2d(net, [3, 3], 2, scope='pool2')
                 net = slim.conv2d(net, 384, [3, 3], scope='conv3')
                 net = slim.conv2d(net, 384, [3, 3], scope='conv4')
-                net = slim.conv2d(net, 256, [3, 3], scope='conv5'
+                net = slim.conv2d(net, 256, [3, 3], scope='conv5')
                 net = slim.max_pool2d(net, [3, 3], 2, scope='pool5')
 
             # Use conv2d instead of fully_connected layers.
