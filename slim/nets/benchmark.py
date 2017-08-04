@@ -126,7 +126,7 @@ def time_tensorflow_run(session, target, images_placeholder, labels_placeholder,
     l = '%s across %d steps, %.3f +/- %.3f sec / batch. Throughput is %.3f sample / sec.' % \
         (info_string, opts.num_batches, mn, sd, opts.num_batches*opts.batch_size/total_duration)
     print(l)
-    with open('./log/{}.log'.format(opts.model_type), 'a+') as f:
+    with open('./log/{}_{}.log'.format(opts.model_type, opts.mode), 'a+') as f:
         f.write(l + '\n')
 
 
@@ -233,16 +233,16 @@ if __name__ == '__main__':
     elif opts.model_type == 'vgg_19':
         from nets.vgg import vgg_19 as inference
     elif opts.model_type == 'alexnet_v1':
-        if opts.mode == 'GPU':
-            from nets.alexnet_nchw import alexnet_v1 as inference
+        if opts.mode == 'CPU':
+            from nets.alexnet import alexnet_v2 as inference
         else:
-            from nets.alexnet_v1 import alexnet_v1 as inference
+            from nets.alexnet_nchw import alexnet_v1 as inference
     else:
         print("Model: {} is not supported".format(opts.model_type))
         sys.exit(1)
     l = "Model:"+opts.model_type+". Batch size is: "+str(opts.batch_size)
     print(l)
-    with open('./log/{}.log'.format(opts.model_type), 'a+') as f:
+    with open('./log/{}_{}.log'.format(opts.model_type, opts.mode), 'a+') as f:
         f.write(l + '\n')
     run_benchmark()
 
