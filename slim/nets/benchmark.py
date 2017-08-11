@@ -56,15 +56,15 @@ def placeholder_inputs():
     """
     batch_size = opts.batch_size
     image_size = opts.image_size
-    images_placeholder = None
-    labels_placeholder = None
     if opts.mode == 'CPU':
-        images_placeholder = tf.placeholder(tf.float32,
-                                            shape=(batch_size, image_size, image_size, 3))
-        labels_placeholder = tf.placeholder(tf.int32, shape=batch_size)
+        shape = [batch_size, image_size, image_size, 3]
     else:
-        images_placeholder = tf.placeholder(tf.float32,
-                                            shape=(batch_size, 3, image_size, image_size))
+        shape = [batch_size, 3, image_size, image_size]
+    if opts.debug:
+        images_placeholder = tf.Variable(tf.constant(1.2, tf.float32, shape=shape), name='input', trainable=False)
+        labels_placeholder = tf.Variable(tf.constant(1, tf.int32, shape=[batch_size]), name='labels', trainable=False)
+    else:
+        images_placeholder = tf.placeholder(tf.float32, shape=shape)
         labels_placeholder = tf.placeholder(tf.int32, shape=batch_size)
     return images_placeholder, labels_placeholder
 
@@ -99,9 +99,27 @@ def time_tensorflow_run(session, target, images_placeholder, labels_placeholder,
     total_duration_squared = 0.0
     batch_size = opts.batch_size
     image_size = opts.image_size
+    if opts.debug:
+        if not isinstance(target, list):
+            target = [target]
+        with open('./log/{}_{}.log'.format(opts.model_type, opts.mode), 'a+') as f:
+            f.write('{}\n'.format(info_string))
+            for var in target:
+                output = session.run(var)
+                f.write('{}: {}\n'.format(var.name, output))
+            if 'Backward' in info_string:
+                objective = tf.get_collection('loss')[0]
+                grads = tf.gradients(objective, tf.trainable_variables())
+                for n in grads:
+                    if n is None:
+                        continue
+                    output = session.run(n)
+                    f.write('{}: {}\n'.format(n.name, output))
+
+        return
+
     for i in xrange(opts.num_batches + num_steps_burn_in):
         # Feed dictionaray
-        feed_dict = {}
         if opts.mode == 'CPU':
             feed_dict = {
                 images_placeholder: np.random.randn(batch_size, image_size, image_size, 3)*1e-1,
@@ -141,34 +159,53 @@ def run_benchmark():
         images_placeholder, labels_placeholder = placeholder_inputs()
         # Build a Graph that computes the logits predictions from the
         # inference model.
-        if opts.mode == 'CPU':
-            logits, _ = inference(images_placeholder, num_classes=1000)
-        elif opts.mode == 'GPU':
-            logits, _ = inference(images_placeholder, num_classes=1000, device='/gpu:0')
+        if opts.load:
+            sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+            saver = tf.train.import_meta_graph('./log/{}.meta'.format(opts.model_type), clear_devices=True)
+            saver.restore(sess, './log/{}.ckpt'.format(opts.model_type))
+            # if opts.mode == 'GPU':
+            #     with tf.device('/gpu:0'):
+            #         saver.restore(sess, './log/{}.ckpt'.format(opts.model_type))
+            # else:
+            #     with tf.device('/cpu:0'):
+            #         saver.restore(sess, './log/{}.ckpt'.format(opts.model_type))
+            logits = tf.get_collection('logits')[0]
+            train_op = tf.get_collection('train_op')[0]
         else:
-            # TensorFLow MKL
-            logits, _ = inference(images_placeholder, num_classes=1000, device='/cpu:0')
+            if opts.mode == 'CPU':
+                logits, _ = inference(images_placeholder, num_classes=1000)
+            elif opts.mode == 'GPU':
+                logits, _ = inference(images_placeholder, num_classes=1000, device='/gpu:0')
+            else:
+                # TensorFLow MKL
+                logits, _ = inference(images_placeholder, num_classes=1000, device='/cpu:0')
 
-        # Get loss function
-        objective = loss(logits, labels_placeholder)
+            # # Get loss function
+            objective = loss(logits, labels_placeholder)
 
-        # Get train option
-        learning_rate = 0.001
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate)
-        train_op = optimizer.minimize(objective)
+            # Get train option
+            learning_rate = 0.001
+            optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+            train_op = optimizer.minimize(objective)
+            tf.add_to_collection('logits', logits)
+            tf.add_to_collection('train_op', train_op)
+            tf.add_to_collection('loss', objective)
 
-        # Build an initialization operation.
-        init = tf.global_variables_initializer()
+            # Build an initialization operation.
+            init = tf.global_variables_initializer()
 
-        # config.gpu_options.allocator_type = 'BFC'
-        sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
-        sess.run(init)
-
+            # config.gpu_options.allocator_type = 'BFC'
+            sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+            sess.run(init)
+            # save model after init
+            saver = tf.train.Saver()
+            saver.save(sess, './log/{}.ckpt'.format(opts.model_type))
+            saver.export_meta_graph('./log/{}.meta'.format(opts.model_type))
         # Run the forward benchmark.
         time_tensorflow_run(sess, logits, images_placeholder, labels_placeholder, "Forward")
-
         # Run the backward benchmark.
-        time_tensorflow_run(sess, train_op, images_placeholder, labels_placeholder, "Forward-backward")
+        time_tensorflow_run(sess, train_op, images_placeholder, labels_placeholder, "Forward-Backward")
+
 
 ResNet = False
 
@@ -180,20 +217,31 @@ if __name__ == '__main__':
     )
     optparser.add_option(
         "--num_batches", default=100, type='int',
-         help="number of batches to run"
+        help="number of batches to run"
     )
     optparser.add_option(
-            "--image_size", default=224, type='int',
-         help="size of image defaut is 224"
+        "--image_size", default=224, type='int',
+        help="size of image defaut is 224"
     )
     optparser.add_option(
         "--learning_rate", default=0.001, type='float',
+        help="set learniing rate"
     )
     optparser.add_option(
         "--model_type", default='inception_v1',
+        help="set model type"
     )
     optparser.add_option(
         "--mode", default='CPU',
+        help="set mode (CPU, GPU, MKL)"
+    )
+    optparser.add_option(
+        "--debug", action="store_true",
+        help="output verbosely in log"
+    )
+    optparser.add_option(
+        "--load", action="store_true",
+        help="load model from file"
     )
     opts = optparser.parse_args()[0]
     if opts.model_type == 'inception_v1':
